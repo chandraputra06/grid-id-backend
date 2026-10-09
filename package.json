@@ -18,5 +18,11 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
-  }
+  },
+  "scripts": {
+  "dev": "nodemon src/index.js",
+  "start": "node src/index.js",
+  "seed": "node scripts/seed.js",
+  "smoke:bmkg": "node scripts/smoke-bmkg.js"
+}
 }
