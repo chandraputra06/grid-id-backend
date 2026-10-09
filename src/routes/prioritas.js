@@ -2,21 +2,29 @@ const router = require('express').Router();
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/apiError');
 const supabase = require('../config/supabase');
+const { computeForAsset } = require('../lib/riskScore');
 
-// GET /api/prioritas — daftar aset terurut Risk Score (GRID vs MAXIMO).
-// PLACEHOLDER: akan terisi setelah Risk Score Engine mengisi tabel risk_scores.
+// GET /api/prioritas — semua aset terurut Risk Score (desc)
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const { data, error } = await supabase
-      .from('risk_scores')
-      .select(
-        '*, assets:asset_id(asset_code,name,asset_type,unit,lat,lng), maximo:maximo_condition_id(condition_grade,condition_score)'
-      )
-      .order('score', { ascending: false })
-      .limit(200);
+    const { data: assets, error } = await supabase.from('assets').select('*');
     if (error) throw new ApiError(500, 'db_error', error.message);
-    res.json({ ok: true, data, note: 'Placeholder: terisi setelah Risk Score Engine aktif.' });
+
+    const results = [];
+    for (const a of assets) {
+      const s = await computeForAsset(a, { persist: false });
+      const { data: mc } = await supabase
+        .from('maximo_conditions').select('condition_grade,condition_score')
+        .eq('asset_id', a.id).order('fetched_at', { ascending: false }).limit(1);
+      results.push({
+        ...s,
+        asset: { asset_code: a.asset_code, name: a.name, asset_type: a.asset_type, unit: a.unit, lat: a.lat, lng: a.lng },
+        maximo: (mc && mc[0]) || null,
+      });
+    }
+    results.sort((x, y) => y.score - x.score);
+    res.json({ ok: true, data: results });
   })
 );
 

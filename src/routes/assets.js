@@ -45,4 +45,17 @@ router.get(
   })
 );
 
+const { computeForAsset } = require('../lib/riskScore');
+
+// GET /api/assets/:id/score — hitung Risk Score (severity 40 / cuaca 35 / kepadatan 25)
+router.get(
+  '/:id/score',
+  asyncHandler(async (req, res) => {
+    const { data: asset, error } = await supabase.from('assets').select('*').eq('id', req.params.id).single();
+    if (error) throw new ApiError(404, 'not_found', 'Aset tidak ditemukan');
+    const score = await computeForAsset(asset, { persist: true });
+    res.json({ ok: true, data: score });
+  })
+);
+
 module.exports = router;
