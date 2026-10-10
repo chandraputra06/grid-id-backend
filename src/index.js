@@ -14,6 +14,7 @@ app.use('/api/cuaca', require('./routes/cuaca'));
 app.use('/api/assets', require('./routes/assets'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/prioritas', require('./routes/prioritas'));
+app.use('/api/scan', require('./routes/scan'));
 
 // 404 + error handler (harus paling bawah)
 app.use(notFound);
