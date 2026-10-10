@@ -16,13 +16,6 @@ npm run dev                  # jalan di http://localhost:4000
 
 Cek sehat: `http://localhost:4000/api/health`
 
-## Smoke test BMKG (tugas hari ini)
-```bash
-npm run smoke:bmkg
-```
-Menguji API BMKG Bali (Pemogan/Renon/Kuta) tanpa DB — konfirmasi: struktur field,
-satuan `ws` (km/jam), timezone pada `valid_from`, dan limit 60 req/menit/IP.
-
 ## Struktur
 ```
 src/
