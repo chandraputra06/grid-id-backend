@@ -23,9 +23,12 @@ router.post(
         reporter_name = null, reporter_contact = null, description = null, lat = null, lng = null,
       } = req.body || {};
       if (!photo_url) throw new ApiError(400, 'bad_request', 'report_id atau photo_url wajib diisi');
+      // kaitkan ke akun yang login (dipakai poin/misi)
+      const owner = (req.user && req.user.email) || reporter_contact;
+      const ownerName = (req.user && req.user.profile && req.user.profile.full_name) || reporter_name;
       const { data, error } = await supabase
         .from('reports')
-        .insert({ photo_url, asset_id, source, reporter_name, reporter_contact, description, lat, lng })
+        .insert({ photo_url, asset_id, source, reporter_name: ownerName, reporter_contact: owner, description, lat, lng })
         .select().single();
       if (error) throw new ApiError(500, 'db_error', error.message);
       report = data;

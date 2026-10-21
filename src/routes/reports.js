@@ -20,9 +20,13 @@ router.post(
 
     if (!photo_url) throw new ApiError(400, 'bad_request', 'photo_url wajib diisi');
 
+    // kaitkan ke akun yang login (dipakai poin/misi). Nama & email diambil dari server, bukan dari klien.
+    const owner = (req.user && req.user.email) || reporter_contact;
+    const ownerName = (req.user && req.user.profile && req.user.profile.full_name) || reporter_name;
+
     const { data, error } = await supabase
       .from('reports')
-      .insert({ asset_id, source, reporter_name, reporter_contact, photo_url, description, lat, lng })
+      .insert({ asset_id, source, reporter_name: ownerName, reporter_contact: owner, photo_url, description, lat, lng })
       .select()
       .single();
     if (error) throw new ApiError(500, 'db_error', error.message);
@@ -42,34 +46,6 @@ router.get(
       .limit(100);
     if (error) throw new ApiError(500, 'db_error', error.message);
     res.json({ ok: true, data });
-  })
-);
-
-// DELETE /api/reports/:id — hapus laporan PERMANEN (admin/supervisor saja).
-// Dipakai untuk membersihkan laporan yang sudah ditolak agar benar-benar hilang.
-router.delete(
-  '/:id',
-  asyncHandler(async (req, res) => {
-    const role = req.user?.role;
-    if (role !== 'admin' && role !== 'supervisor') {
-      throw new ApiError(403, 'forbidden', 'Hanya admin/supervisor yang boleh menghapus laporan');
-    }
-    const { id } = req.params;
-
-    // Bersihkan juga penugasan yang menautkan laporan ini (penanda #LPR:<id>),
-    // agar tidak ada tugas menggantung yang menunjuk laporan terhapus.
-    await supabase.from('assignments').delete().ilike('problem_desc', `%#LPR:${id}%`);
-
-    const { data, error } = await supabase
-      .from('reports')
-      .delete()
-      .eq('id', id)
-      .select('id')
-      .maybeSingle();
-    if (error) throw new ApiError(500, 'db_error', error.message);
-    if (!data) throw new ApiError(404, 'not_found', 'Laporan tidak ditemukan');
-
-    res.json({ ok: true, data: { id: data.id, deleted: true } });
   })
 );
 
