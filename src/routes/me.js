@@ -49,17 +49,28 @@ router.patch(
     if (avatar_url !== undefined) patch.avatar_url = avatar_url;
     if (Object.keys(patch).length === 0) throw new ApiError(400, 'bad_request', 'Tidak ada field untuk diupdate');
 
+    // maybeSingle: tidak melempar 500 ("Cannot coerce...") bila baris profil tidak ada/lebih dari satu.
     const { data, error } = await supabase
       .from('profiles')
       .update(patch)
       .eq('id', req.user.id)
       .select('role, full_name, phone, unit, avatar_url, uid, up3, ulp')
-      .single();
+      .maybeSingle();
     if (error) throw new ApiError(500, 'db_error', error.message);
+    if (!data) throw new ApiError(404, 'not_found', 'Profil tidak ditemukan untuk akun ini');
 
     res.json({ ok: true, data: { id: req.user.id, email: req.user.email, ...data } });
   })
 );
+
+// Pastikan bucket avatar ada (service_role). Error "already exists" diabaikan.
+async function ensureAvatarBucket() {
+  await supabase.storage.createBucket(AVATAR_BUCKET, {
+    public: true,
+    fileSizeLimit: '3MB',
+    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+  });
+}
 
 // POST /api/me/avatar-url — signed upload URL untuk foto profil.
 router.post(
@@ -73,8 +84,13 @@ router.post(
 
     const path = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
 
-    const { data, error } = await supabase.storage.from(AVATAR_BUCKET).createSignedUploadUrl(path);
-    if (error) throw new ApiError(500, 'storage_error', error.message);
+    let signed = await supabase.storage.from(AVATAR_BUCKET).createSignedUploadUrl(path);
+    // Bucket belum ada? buat lalu coba sekali lagi (menghindari storage_error "resource does not exist").
+    if (signed.error) {
+      await ensureAvatarBucket();
+      signed = await supabase.storage.from(AVATAR_BUCKET).createSignedUploadUrl(path);
+    }
+    if (signed.error) throw new ApiError(500, 'storage_error', signed.error.message);
 
     const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
 
@@ -83,8 +99,8 @@ router.post(
       data: {
         bucket: AVATAR_BUCKET,
         path,
-        token: data.token,
-        signed_url: data.signedUrl,
+        token: signed.data.token,
+        signed_url: signed.data.signedUrl,
         public_url: pub.publicUrl,
       },
     });
