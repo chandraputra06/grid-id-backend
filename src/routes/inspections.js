@@ -19,6 +19,8 @@ router.post(
     if (b.diagnosis_score != null && (b.diagnosis_score < 0 || b.diagnosis_score > 100)) {
       throw new ApiError(400, 'bad_request', 'diagnosis_score harus 0-100');
     }
+    // readings: pengukuran lapangan (temperatur aset, suhu lingkungan, arus, beban trafo) — jsonb.
+    const readings = b.readings && typeof b.readings === 'object' && !Array.isArray(b.readings) ? b.readings : null;
     const row = {
       asset_id: b.asset_id || null,
       petugas_id: req.user.id,
@@ -32,6 +34,7 @@ router.post(
       diagnosis_text: b.diagnosis_text || null,
       humidity: b.humidity ?? null,
       weather: b.weather || null,
+      readings,
       photos: b.photos || null,
     };
     const { data, error } = await supabase.from('inspections').insert(row).select('*').single();
