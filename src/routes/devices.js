@@ -3,7 +3,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/apiError');
 const supabase = require('../config/supabase');
 
-const TYPES = ['camera', 'thermal', 'sensor'];
+const TYPES = ['camera', 'thermal', 'sensor', 'multisensor'];
 
 // POST /api/devices — daftarkan alat (admin/hardware).
 router.post(
@@ -11,9 +11,10 @@ router.post(
   asyncHandler(async (req, res) => {
     const b = req.body || {};
     if (!b.device_code) throw new ApiError(400, 'bad_request', 'device_code wajib');
-    if (b.type && !TYPES.includes(b.type)) throw new ApiError(400, 'bad_request', 'type harus camera/thermal/sensor');
+    if (b.type && !TYPES.includes(b.type)) throw new ApiError(400, 'bad_request', 'type harus camera/thermal/sensor/multisensor');
     const row = {
       device_code: b.device_code,
+      name: b.name || null,
       type: b.type || null,
       asset_id: b.asset_id || null,
       status: b.status || 'offline',

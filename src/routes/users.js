@@ -3,7 +3,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/apiError');
 const supabase = require('../config/supabase');
 
-const ROLES = ['admin', 'petugas', 'warga', 'supervisor', 'hardware'];
+const ROLES = ['admin', 'petugas', 'warga', 'supervisor', 'hardware', 'b2b'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Role apa yang boleh DIBERIKAN oleh si aktor.

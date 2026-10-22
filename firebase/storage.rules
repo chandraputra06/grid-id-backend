@@ -1,0 +1,22 @@
+rules_version = '2';
+
+// Gambar RGB & matriks thermal dari perangkat GRID.ID.
+// - Perangkat hanya boleh MENULIS ke foldernya sendiri (custom claim device_id).
+// - Tidak ada akses baca dari klien: dashboard membaca lewat backend
+//   (signed URL berumur pendek setelah cek hak akses).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /frames/{deviceId}/{fileName} {
+      allow read: if false;
+      allow create: if request.auth != null
+                    && request.auth.token.device_id == deviceId
+                    && request.resource.size < 3 * 1024 * 1024
+                    && (request.resource.contentType.matches('image/(jpeg|png|webp)')
+                        || request.resource.contentType == 'application/json');
+      allow update, delete: if false;
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "telemetry": {
+      "$device_id": {
+        "$push_id": {
+          ".write": "auth != null && auth.token.device_id === $device_id && !data.exists()",
+          ".validate": "newData.hasChildren(['device_id', 'timestamp', 'telemetry']) && newData.child('device_id').val() === $device_id && newData.child('timestamp').isString()"
+        }
+      }
+    },
+
+    "frames": {
+      "$device_id": {
+        "$push_id": {
+          ".write": "auth != null && auth.token.device_id === $device_id",
+          ".validate": "newData.hasChildren(['frame_id', 'device_id', 'timestamp', 'frame_type', 'image_path']) && newData.child('device_id').val() === $device_id && (newData.child('frame_type').val() === 'rgb' || newData.child('frame_type').val() === 'thermal') && newData.child('image_path').isString() && newData.child('image_path').val().beginsWith('frames/' + $device_id + '/')"
+        }
+      }
+    },
+
+    "device_config": {
+      "$device_id": {
+        ".read": "auth != null && auth.token.device_id === $device_id",
+        ".write": false
+      }
+    }
+  }
+}
