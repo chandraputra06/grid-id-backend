@@ -4,6 +4,25 @@ const ApiError = require('../utils/apiError');
 const supabase = require('../config/supabase');
 
 const LEVELS = ['kritis', 'waspada', 'aman'];
+const REVIEW = ['checked', 'rejected'];
+const isSuper = (r) => r === 'admin' || r === 'supervisor';
+
+// Lampirkan ringkasan aset + nama petugas untuk tampilan review supervisor.
+async function attach(rows) {
+  const assetIds = [...new Set(rows.map((r) => r.asset_id).filter(Boolean))];
+  const petugasIds = [...new Set(rows.map((r) => r.petugas_id).filter(Boolean))];
+  const assets = {};
+  const profs = {};
+  if (assetIds.length) {
+    const { data } = await supabase.from('assets').select('id, asset_code, name, unit, lat, lng').in('id', assetIds);
+    (data || []).forEach((a) => (assets[a.id] = a));
+  }
+  if (petugasIds.length) {
+    const { data } = await supabase.from('profiles').select('id, full_name').in('id', petugasIds);
+    (data || []).forEach((p) => (profs[p.id] = p));
+  }
+  return rows.map((r) => ({ ...r, asset: assets[r.asset_id] || null, petugas: profs[r.petugas_id] || null }));
+}
 
 // POST /api/inspections — petugas input inspeksi detail.
 router.post(
@@ -43,16 +62,17 @@ router.post(
   })
 );
 
-// GET /api/inspections?asset_id= — petugas lihat miliknya; supervisor/admin lihat semua.
+// GET /api/inspections?asset_id=&review_status= — petugas lihat miliknya; supervisor/admin lihat semua.
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     let q = supabase.from('inspections').select('*').order('created_at', { ascending: false }).limit(200);
     if (req.query.asset_id) q = q.eq('asset_id', req.query.asset_id);
+    if (req.query.review_status) q = q.eq('review_status', req.query.review_status);
     if (req.user.role === 'petugas') q = q.eq('petugas_id', req.user.id);
     const { data, error } = await q;
     if (error) throw new ApiError(500, 'db_error', error.message);
-    res.json({ ok: true, data: data || [] });
+    res.json({ ok: true, data: await attach(data || []) });
   })
 );
 
@@ -63,6 +83,37 @@ router.get(
     const { data, error } = await supabase.from('inspections').select('*').eq('id', req.params.id).maybeSingle();
     if (error) throw new ApiError(500, 'db_error', error.message);
     if (!data) throw new ApiError(404, 'not_found', 'Inspeksi tidak ditemukan');
+    if (req.user.role === 'petugas' && data.petugas_id !== req.user.id) throw new ApiError(403, 'forbidden', 'Bukan inspeksimu');
+    const [withMeta] = await attach([data]);
+    res.json({ ok: true, data: withMeta });
+  })
+);
+
+// PATCH /api/inspections/:id/review — keputusan supervisor/admin.
+// body: { decision: 'checked'|'rejected', note? }
+router.patch(
+  '/:id/review',
+  asyncHandler(async (req, res) => {
+    if (!isSuper(req.user.role)) throw new ApiError(403, 'forbidden', 'Hanya supervisor/admin yang bisa meninjau');
+    const { decision, note } = req.body || {};
+    if (!REVIEW.includes(decision)) throw new ApiError(400, 'bad_request', "decision harus 'checked' atau 'rejected'");
+
+    const { data: insp, error: e0 } = await supabase.from('inspections').select('id').eq('id', req.params.id).maybeSingle();
+    if (e0) throw new ApiError(500, 'db_error', e0.message);
+    if (!insp) throw new ApiError(404, 'not_found', 'Inspeksi tidak ditemukan');
+
+    const { data, error } = await supabase
+      .from('inspections')
+      .update({
+        review_status: decision,
+        reviewed_by: req.user.id,
+        reviewed_at: new Date().toISOString(),
+        review_note: note || null,
+      })
+      .eq('id', insp.id)
+      .select('*')
+      .single();
+    if (error) throw new ApiError(500, 'db_error', error.message);
     res.json({ ok: true, data });
   })
 );
