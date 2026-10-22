@@ -8,7 +8,21 @@ const { requireAuth, requireRole } = require('./middleware/auth');
 
 const app = express();
 
-app.use(cors({ origin: env.CORS_ORIGIN }));
+// CORS_ORIGIN boleh berisi beberapa origin dipisah koma, mis.
+//   CORS_ORIGIN=https://grid-id.com,https://www.grid-id.com
+// CORS_ALLOW_LOCALHOST=true -> izinkan juga http://localhost:<port> & http://127.0.0.1:<port> (untuk debugging).
+const allowedOrigins = String(env.CORS_ORIGIN || '*').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+const LOCALHOST_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+app.use(
+  cors({
+    origin(origin, cb) {
+      // Request tanpa Origin (curl, Postman, server-to-server) tidak terkena CORS.
+      if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) return cb(null, true);
+      if (env.CORS_ALLOW_LOCALHOST && LOCALHOST_RE.test(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+  })
+);
 app.use(express.json({ limit: '2mb' }));
 
 // Docs (publik)
@@ -68,12 +82,25 @@ app.use('/api/mitra', requireAuth, requireRole('admin', 'petugas', 'supervisor')
 // === Hardware / IoT (role hardware) ===
 app.use('/api/devices', requireAuth, requireRole('admin', 'hardware'), require('./routes/devices'));
 
+// === Hardware Monitoring (Firebase -> backend -> dashboard) ===
+// Supervisor PLN + admin + tim hardware: seluruh perangkat.
+// app.use('/api/hardware', requireAuth, noStore, requireRole('admin', 'supervisor', 'hardware'), require('./routes/hardware'));
+
+// === GRID.ID Business Portal (B2B, multi-organisasi) ===
+// Scope data = aset yang diberikan ke organisasi pengguna (ditegakkan di server).
+// const { resolveBusinessScope } = require('./lib/hardware/access');
+// app.use('/api/business', requireAuth, noStore, requireRole('b2b'), resolveBusinessScope, require('./routes/business'));
+// app.use('/api/organizations', requireAuth, requireRole('admin'), require('./routes/organizations'));
+
 // 404 + error handler (harus paling bawah)
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(env.PORT, () => {
-  console.log(`GRID.ID backend jalan di http://localhost:${env.PORT}`);
-  console.log(`Coba: http://localhost:${env.PORT}/api/health`);
-  console.log(`Docs: http://localhost:${env.PORT}/api/docs`);
-});
+// app.listen(env.PORT, () => {
+//   console.log(`GRID.ID backend jalan di http://localhost:${env.PORT}`);
+//   // Bridge Firebase -> Supabase (tidak aktif bila Firebase belum dikonfigurasi; status di /api/hardware/status)
+//   const hw = require('./lib/hardware/bridge').start();
+//   if (!hw.enabled) console.log(`[hw-bridge] tidak aktif: ${hw.reason}`);
+//   console.log(`Coba: http://localhost:${env.PORT}/api/health`);
+//   console.log(`Docs: http://localhost:${env.PORT}/api/docs`);
+// });

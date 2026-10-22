@@ -117,3 +117,21 @@ Aset terurut Risk Score (GRID vs MAXIMO). Terisi setelah Risk Score Engine aktif
 - Panggil **backend ini**, bukan Supabase langsung dari browser (RLS memblokir anon).
 - Semua endpoint belum butuh auth untuk MVP.
 - Endpoint menyusul: `/api/assets/:id/score`, `/api/scan`, `/api/rekomendasi/:assetId` — bentuk respons tetap pakai envelope `{ ok, data }`.
+
+---
+
+## Hardware Monitoring & Business Portal (v0.2)
+
+Lihat **HARDWARE_INTEGRATION.md** untuk kontrak data Firebase, daftar lengkap endpoint `/api/hardware`, `/api/business`, `/api/organizations`, aturan peringatan, dan langkah uji.
+
+| Field | Nilai |
+|---|---|
+| `connection` (device) | `online` · `late` · `offline` · `never` |
+| `frame_type` | `rgb` · `thermal` |
+| `upload_status` | `pending` · `uploaded` · `failed` |
+| `inference_status` | `pending` · `processing` · `done` · `failed` · `skipped` · `not_applicable` |
+| `category` (device_alerts) | `offline` · `telemetry_late` · `temp_threshold` · `audio_anomaly` · `gas_threshold` · `alarm_perangkat` · `ai_detection` · `upload_failed` |
+| `status` (device_alerts) | `baru` · `ditinjau` · `selesai` |
+| `priority` (device_alerts) | `tinggi` · `sedang` · `rendah` |
+| `source` | `firebase` · `simulasi` |
+| `role` (profiles) | + `b2b` · `org_role`: `owner` · `viewer` |

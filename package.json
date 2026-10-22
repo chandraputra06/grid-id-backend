@@ -2,7 +2,7 @@
   "name": "grid-id-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "GRID.ID backend — Express + Supabase + BMKG connector",
+  "description": "GRID.ID backend \u2014 Express + Supabase + BMKG connector",
   "main": "src/index.js",
   "scripts": {
     "dev": "nodemon src/index.js",
@@ -10,7 +10,11 @@
     "seed": "node scripts/seed.js",
     "smoke:bmkg": "node scripts/smoke-bmkg.js",
     "seed:spk": "node scripts/seed-spk.js",
-    "seed:users": "node scripts/seed-users.js"
+    "seed:users": "node scripts/seed-users.js",
+    "test": "node --test test/*.test.js",
+    "hw:simulate": "node scripts/hw-simulate.js",
+    "hw:provision": "node scripts/hw-provision-device.js",
+    "seed:b2b": "node scripts/seed-b2b.js"
   },
   "engines": {
     "node": "22.x"
@@ -20,6 +24,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "firebase-admin": "^13.0.0",
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
