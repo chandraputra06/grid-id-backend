@@ -84,7 +84,8 @@ app.use('/api/devices', requireAuth, requireRole('admin', 'hardware'), require('
 
 // === Hardware Monitoring (Firebase -> backend -> dashboard) ===
 // Supervisor PLN + admin + tim hardware: seluruh perangkat.
-// app.use('/api/hardware', requireAuth, noStore, requireRole('admin', 'supervisor', 'hardware'), require('./routes/hardware'));
+// CATATAN: butuh src/config/firebase.js + paket 'firebase-admin'. Bila belum ada, komentari baris ini.
+app.use('/api/hardware', requireAuth, noStore, requireRole('admin', 'supervisor', 'hardware'), require('./routes/hardware'));
 
 // === GRID.ID Business Portal (B2B, multi-organisasi) ===
 // Scope data = aset yang diberikan ke organisasi pengguna (ditegakkan di server).
@@ -96,11 +97,16 @@ app.use('/api/devices', requireAuth, requireRole('admin', 'hardware'), require('
 app.use(notFound);
 app.use(errorHandler);
 
-// app.listen(env.PORT, () => {
-//   console.log(`GRID.ID backend jalan di http://localhost:${env.PORT}`);
-//   // Bridge Firebase -> Supabase (tidak aktif bila Firebase belum dikonfigurasi; status di /api/hardware/status)
-//   const hw = require('./lib/hardware/bridge').start();
-//   if (!hw.enabled) console.log(`[hw-bridge] tidak aktif: ${hw.reason}`);
-//   console.log(`Coba: http://localhost:${env.PORT}/api/health`);
-//   console.log(`Docs: http://localhost:${env.PORT}/api/docs`);
-// });
+app.listen(env.PORT, () => {
+  console.log(`GRID.ID backend jalan di http://localhost:${env.PORT}`);
+  // Bridge Firebase -> Supabase (tidak aktif bila Firebase belum dikonfigurasi; status di /api/hardware/status).
+  // Dibungkus try/catch supaya kegagalan bridge TIDAK menjatuhkan server.
+  try {
+    const hw = require('./lib/hardware/bridge').start();
+    if (!hw || !hw.enabled) console.log(`[hw-bridge] tidak aktif: ${hw && hw.reason ? hw.reason : 'tidak diketahui'}`);
+  } catch (e) {
+    console.error('[hw-bridge] gagal start:', e && e.message);
+  }
+  console.log(`Coba: http://localhost:${env.PORT}/api/health`);
+  console.log(`Docs: http://localhost:${env.PORT}/api/docs`);
+});
