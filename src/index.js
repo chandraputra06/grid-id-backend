@@ -89,9 +89,11 @@ app.use('/api/hardware', requireAuth, noStore, requireRole('admin', 'supervisor'
 
 // === GRID.ID Business Portal (B2B, multi-organisasi) ===
 // Scope data = aset yang diberikan ke organisasi pengguna (ditegakkan di server).
-// const { resolveBusinessScope } = require('./lib/hardware/access');
-// app.use('/api/business', requireAuth, noStore, requireRole('b2b'), resolveBusinessScope, require('./routes/business'));
-// app.use('/api/organizations', requireAuth, requireRole('admin'), require('./routes/organizations'));
+// CATATAN: butuh tabel dari migrasi hardware/B2B (organizations, organization_assets,
+// profiles.organization_id/org_role). Jalankan migrasi itu sebelum endpoint ini dipakai.
+const { resolveBusinessScope } = require('./lib/hardware/access');
+app.use('/api/business', requireAuth, noStore, requireRole('b2b'), resolveBusinessScope, require('./routes/business'));
+app.use('/api/organizations', requireAuth, requireRole('admin'), require('./routes/organizations'));
 
 // 404 + error handler (harus paling bawah)
 app.use(notFound);
