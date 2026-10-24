@@ -109,6 +109,13 @@ app.listen(env.PORT, () => {
   } catch (e) {
     console.error('[hw-bridge] gagal start:', e && e.message);
   }
+  // Adapter Sistem_IoT (Firebase RTDB tim hardware) -> backend, via polling REST.
+  // Aktif bila GRID_HW_RTDB_URL diisi; dibungkus try/catch agar tidak menjatuhkan server.
+  try {
+    require('./lib/hardware/sistemIotAdapter').start();
+  } catch (e) {
+    console.error('[hw-adapter] gagal start:', e && e.message);
+  }
   console.log(`Coba: http://localhost:${env.PORT}/api/health`);
   console.log(`Docs: http://localhost:${env.PORT}/api/docs`);
 });
