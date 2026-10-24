@@ -4,6 +4,7 @@ const ApiError = require('../utils/apiError');
 const supabase = require('../config/supabase');
 const aiClient = require('../lib/aiClient');
 const { computeForAsset } = require('../lib/riskScore');
+const notifier = require('../lib/alertNotifier');
 
 // Unduh byte foto dari URL (storage Supabase) untuk dikirim ke layanan AI (multipart).
 async function fetchImageBuffer(photoUrl) {
@@ -105,6 +106,14 @@ router.post(
       ai_severity_max: ai_status === 'done' ? severity_max : null,
       ai_inference_ms: inference_ms,
     }).eq('id', report.id);
+
+    // Alur B — laporan dengan deteksi AI berisiko tinggi (severity >= 70) -> email peringatan area.
+    // Fire-and-forget: tidak memblok respons & tidak menggagalkan scan bila email gagal.
+    if (ai_status === 'done' && severity_max >= 70) {
+      notifier
+        .notifyCriticalArea({ ...report, lat: report.lat, lng: report.lng, ai_severity_max: severity_max }, { severity: severity_max })
+        .catch(() => {});
+    }
 
     // Recompute Risk Score hanya bila AI sukses & laporan terkait aset.
     // Komponen severity 40% = severity tertinggi (0 bila tak ada deteksi). Cuaca 35% & kepadatan 25% tetap.
