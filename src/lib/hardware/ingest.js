@@ -3,6 +3,7 @@
 const supabase = require('../../config/supabase');
 const firebase = require('../../config/firebase');
 const aiClient = require('../aiClient');
+const notifier = require('../alertNotifier');
 const { normalizeTelemetry, normalizeFrame } = require('./normalize');
 const rules = require('./rules');
 
@@ -74,6 +75,9 @@ async function upsertAlert(device, cand, extra = {}) {
     .select('id')
     .single();
   if (error) console.error('[hw] gagal menyimpan alert:', error.message);
+  // Email ke supervisor + hardware HANYA saat alert BARU dibuat (bukan update dedup).
+  // Fire-and-forget: tidak memblok ingest & tidak menggagalkannya bila email gagal.
+  if (data && !error) notifier.notifyHardwareAlert(device, cand).catch(() => {});
   return data ? data.id : null;
 }
 
