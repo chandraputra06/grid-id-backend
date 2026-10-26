@@ -6,7 +6,9 @@
 const supabase = require('../config/supabase');
 const mailer = require('./mailer');
 
-const CRITICAL_SEVERITY = 70; // ambang 'kritis' (selaras risk score & severityColor)
+// Ambang 'kritis' (selaras risk score & severityColor). Bisa diturunkan SEMENTARA untuk
+// menguji email lewat env GRID_ALERT_CRITICAL_SEVERITY (mis. 1), lalu kembalikan ke 70.
+const CRITICAL_SEVERITY = Number(process.env.GRID_ALERT_CRITICAL_SEVERITY || 70);
 const AREA_RADIUS_KM = 5;
 const AREA_MIN_INTERVAL_MS = 30 * 60 * 1000; // jeda minimum per area (in-memory, reset saat restart)
 const lastAreaSent = new Map();

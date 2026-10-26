@@ -107,9 +107,10 @@ router.post(
       ai_inference_ms: inference_ms,
     }).eq('id', report.id);
 
-    // Alur B — laporan dengan deteksi AI berisiko tinggi (severity >= 70) -> email peringatan area.
-    // Fire-and-forget: tidak memblok respons & tidak menggagalkan scan bila email gagal.
-    if (ai_status === 'done' && severity_max >= 70) {
+    // Alur B — email peringatan area saat deteksi AI berisiko tinggi.
+    // Ambang severity ditentukan di notifier (env GRID_ALERT_CRITICAL_SEVERITY, default 70);
+    // notifier akan berhenti sendiri bila di bawah ambang. Fire-and-forget.
+    if (ai_status === 'done') {
       notifier
         .notifyCriticalArea({ ...report, lat: report.lat, lng: report.lng, ai_severity_max: severity_max }, { severity: severity_max })
         .catch(() => {});
