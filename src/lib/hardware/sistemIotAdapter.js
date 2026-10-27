@@ -26,6 +26,7 @@
 //   GRID_HW_DEVICE_NAME   (default "Panel Inspeksi 01")
 //   GRID_HW_POLL_MS       (default 10000)
 
+const crypto = require('crypto');
 const supabase = require('../../config/supabase');
 const aiClient = require('../aiClient');
 const ingest = require('./ingest');
@@ -37,6 +38,8 @@ const ROOT = process.env.GRID_HW_RTDB_ROOT || 'Sistem_IoT';
 const DEVICE_CODE = process.env.GRID_HW_DEVICE_CODE || 'PANEL-01';
 const DEVICE_NAME = process.env.GRID_HW_DEVICE_NAME || 'Panel Inspeksi 01';
 const POLL_MS = Math.max(3000, Number(process.env.GRID_HW_POLL_MS || 10000));
+// Bucket Supabase Storage untuk re-host foto insiden (default sama dengan foto laporan warga).
+const STORAGE_BUCKET = process.env.GRID_HW_STORAGE_BUCKET || 'report-photos';
 
 const state = {
   enabled: false,
@@ -184,6 +187,31 @@ function toPayload(sistem) {
   return { payload: { device_id: DEVICE_CODE, timestamp: Date.now(), telemetry, meta, simulated: false }, tick };
 }
 
+const CONTENT_TYPE = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+function extFromUrl(u) {
+  const m = /\.(jpg|jpeg|png|webp)(?:\?|$)/i.exec(u || '');
+  return m ? m[1].toLowerCase() : 'jpg';
+}
+
+// Re-host byte gambar ke Supabase Storage (bucket publik) agar tidak bergantung pada akses
+// ke ImgBB dari jaringan klien (ImgBB kerap diblokir ISP di Indonesia -> gambar gagal dimuat
+// di browser walau backend bisa mengunduhnya). Mengembalikan URL publik Supabase, atau null bila gagal.
+async function rehostImage(buf, srcUrl) {
+  try {
+    const ext = extFromUrl(srcUrl);
+    const path = `hardware/${DEVICE_CODE}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(path, buf, { contentType: CONTENT_TYPE[ext] || 'image/jpeg', upsert: false });
+    if (error) throw new Error(error.message);
+    const { data: pub } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    return (pub && pub.publicUrl) || null;
+  } catch (e) {
+    recordError('re-host gambar', e);
+    return null;
+  }
+}
+
 // Jalankan AI pada foto terbaru (url_foto_terbaru) lalu simpan deteksi + alert.
 async function handlePhoto(sistem, device) {
   const kamera = obj(obj(sistem.kontrol_dan_visual).kamera);
@@ -199,6 +227,9 @@ async function handlePhoto(sistem, device) {
     return recordError('unduh foto', e);
   }
 
+  // Simpan gambar ke Supabase (domain tak diblokir); fallback ke URL ImgBB asli bila upload gagal.
+  const storedUrl = (await rehostImage(buf, url)) || url;
+
   const result = await aiClient.detect(buf, url.split('/').pop() || 'inspeksi.jpg');
   const at = new Date().toISOString();
   const frameId = `${device.device_code}-${Date.now()}`;
@@ -210,7 +241,7 @@ async function handlePhoto(sistem, device) {
     device_id: device.id,
     device_code: device.device_code,
     frame_type: 'rgb',
-    image_path: url, // URL publik (ImgBB), bukan Firebase Storage
+    image_path: storedUrl, // URL publik Supabase (re-host); fallback ImgBB bila upload gagal
     capture_mode: 'event',
     captured_at: at, // wajib (NOT NULL); pakai waktu proses karena waktu firmware non-ISO
     upload_status: 'uploaded',
