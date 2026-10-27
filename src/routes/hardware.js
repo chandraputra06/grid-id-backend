@@ -10,6 +10,7 @@ const { staffScope } = require('../lib/hardware/access');
 const svc = require('../lib/hardware/service');
 const ingest = require('../lib/hardware/ingest');
 const bridge = require('../lib/hardware/bridge');
+const adapter = require('../lib/hardware/sistemIotAdapter');
 const rules = require('../lib/hardware/rules');
 
 const SNAPSHOT_INTERVALS = [5, 10, 30, 60];
@@ -18,11 +19,14 @@ const STREAM_TYPES = ['mjpeg', 'hls', 'iframe'];
 router.use(staffScope);
 
 // GET /api/hardware/status — status integrasi apa adanya (tidak mengklaim terhubung sebelum terbukti).
+// Mencakup DUA jalur sumber data: adapter REST (Sistem_IoT, dipakai alat saat ini) dan
+// bridge firebase-admin lama. Dashboard menilai kesiapan dari salah satu yang aktif.
 router.get(
   '/status',
   asyncHandler(async (req, res) => {
     const fb = firebase.publicStatus();
     const br = bridge.status();
+    const ad = adapter.status();
     res.json({
       ok: true,
       data: {
@@ -37,6 +41,14 @@ router.get(
           last_frame_event_at: br.last_frame_event_at,
           last_error: br.last_error,
           counters: br.counters,
+        },
+        adapter: {
+          enabled: ad.enabled,
+          reason: ad.reason,
+          started_at: ad.started_at,
+          last_poll_at: ad.last_poll_at,
+          last_error: ad.last_error,
+          counters: ad.counters,
         },
         ai_service: { configured: !!(process.env.GRID_AI_URL && process.env.GRID_AI_API_KEY) },
         time: new Date().toISOString(),
