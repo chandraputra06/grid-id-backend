@@ -211,6 +211,7 @@ async function handlePhoto(sistem, device) {
     frame_type: 'rgb',
     image_path: url, // URL publik (ImgBB), bukan Firebase Storage
     capture_mode: 'event',
+    captured_at: at, // wajib (NOT NULL); pakai waktu proses karena waktu firmware non-ISO
     upload_status: 'uploaded',
     inference_status: result.ok ? 'done' : 'failed',
     inference_at: at,
