@@ -206,8 +206,15 @@ async function serializeFrames(frames) {
       const out = { ...f, detections: dets.get(f.frame_id) || [] };
       delete out.image_path;
       out.has_file = f.upload_status === 'uploaded' && !!f.image_path;
-      out.image_url = f.frame_type === 'rgb' && out.has_file ? await signedUrl(f.image_path) : null;
-      out.storage = storageState();
+      // image_path bisa berupa URL publik (mis. ImgBB dari adapter Sistem_IoT) ATAU path Firebase Storage.
+      const external = typeof f.image_path === 'string' && /^https?:\/\//.test(f.image_path);
+      out.image_url =
+        f.frame_type === 'rgb' && out.has_file
+          ? external
+            ? f.image_path // URL publik langsung dipakai, tanpa Firebase Storage
+            : await signedUrl(f.image_path)
+          : null;
+      out.storage = external ? 'ready' : storageState();
       return out;
     })
   );
