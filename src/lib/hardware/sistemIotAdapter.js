@@ -1,13 +1,22 @@
 // src/lib/hardware/sistemIotAdapter.js
 // Adapter untuk Firebase RTDB tim hardware (project InspeksiPanelAI, node "Sistem_IoT").
-// Model data: SATU perangkat, current-state (ditimpa di tempat), foto insiden via ImgBB,
-// frame live base64. Ini BEDA dengan bridge.js (yang mengharapkan /telemetry/<id>/<pushId>
-// + Firebase Storage), jadi dipakai adapter khusus berbasis POLLING REST.
+// Model data: SATU perangkat, current-state (ditimpa di tempat). Skema terbaru punya 4 sub-node:
+//   Sistem_IoT/node_panel_esp32    -> dht22, mic_inmp441, thermal_mlx90640
+//   Sistem_IoT/node_ruang_esp32s3  -> lidar tfluna, mq135, suara 3pin, gps, kesimpulan AI ruangan
+//   Sistem_IoT/info_sistem_dan_ip  -> uptime, rssi, ip, waktu sinkronisasi, url stream
+//   Sistem_IoT/kontrol_dan_visual  -> kamera (url_foto_terbaru untuk YOLO) + servo_gimbal (pan/tilt)
+// BEDA dengan bridge.js (yang mengharapkan /telemetry/<id>/<pushId> + Firebase Storage),
+// jadi dipakai adapter khusus berbasis POLLING REST.
 //
 // Tidak butuh firebase-admin / service account bila Rules RTDB mengizinkan baca.
-// Memetakan Sistem_IoT -> format telemetri internal lalu memakai ingest.js:
-//   -> penyimpanan device_telemetry, evaluasi alert, dan email Alur A otomatis.
-// Foto insiden ImgBB -> aiClient.detect -> device_detections + alert AI (email).
+// Memetakan Sistem_IoT -> format telemetri internal (sama seperti sebelumnya, lihat normalize.js)
+// lalu memakai ingest.js: penyimpanan device_telemetry, evaluasi alert, email Alur A otomatis.
+// Foto insiden (url_foto_terbaru) -> aiClient.detect -> device_frames + device_detections + alert AI.
+//
+// Catatan skema:
+// - GPS: koordinat DIABAIKAN sampai ada fix betulan (jumlah_satelit > 0 & status bukan "MENCARI_SINYAL").
+// - Gas mq135 dipetakan sebagai nilai MENTAH (0-4095) ke gas.raw_value; ppm_estimasi disimpan di meta.
+// - Suara & RSSI disimpan di meta (bukan field telemetri terkalibrasi) agar lolos validasi rentang fisik.
 //
 // ENV:
 //   GRID_HW_RTDB_URL      (wajib) https://inspeksipanelai-default-rtdb.asia-southeast1.firebasedatabase.app
@@ -97,31 +106,88 @@ const n = (v) => {
   if (v != null && v !== '' && Number.isFinite(Number(v))) return Number(v);
   return null;
 };
+const obj = (v) => (v && typeof v === 'object' ? v : {});
+const maxOf = (arr) => {
+  const nums = arr.map(n).filter((x) => x != null);
+  return nums.length ? Math.max(...nums) : null;
+};
 
-// Petakan Sistem_IoT -> payload format internal (lihat normalize.js).
-// Catatan: sensor_suara & kekuatan_sinyal adalah nilai MENTAH (bukan dB/dBm terkalibrasi),
-// jadi SENGAJA tidak dipetakan ke sound_level_db/rssi_dbm agar lolos validasi rentang fisik.
+// Petakan Sistem_IoT (skema 4 sub-node) -> payload format internal (lihat normalize.js).
+// Bentuk output telemetry SENGAJA dijaga sama dengan versi lama agar kompatibel dengan ingest/normalize.
 function toPayload(sistem) {
-  const T = (sistem && sistem.Telemetri) || {};
+  const panel = obj(sistem.node_panel_esp32);
+  const ruang = obj(sistem.node_ruang_esp32s3);
+  const info = obj(sistem.info_sistem_dan_ip);
+  const kv = obj(sistem.kontrol_dan_visual);
+
+  const dht = obj(panel.dht22);
+  const mic = obj(panel.mic_inmp441);
+  const th = obj(panel.thermal_mlx90640);
+  const servo = obj(kv.servo_gimbal);
+  const mq = obj(ruang.detail_mq135);
+  const lidar = obj(ruang.detail_lidar_tfluna);
+  const suara = obj(ruang.detail_suara_3pin);
+  const gps = obj(ruang.gps_lokasi);
+  const aiRoom = obj(ruang.kesimpulan_ai_ruangan);
+
+  // Suhu termal tertinggi dari 3 titik panas (fallback ke suhu_center).
+  const maxTemp = maxOf([th.suhu_max_1, th.suhu_max_2, th.suhu_max_3]) ?? n(th.suhu_center);
+  const termalStatus = String(th.status_termal || '').toUpperCase();
+
+  // Jarak lidar: pakai field datar, fallback ke detail.
+  const distance = n(ruang.lidar_tfluna_jarak_cm) ?? n(lidar.jarak_cm);
+
   const telemetry = {
-    thermal: { max_temp_c: n(T.termal_suhu_max) },
-    environment: { ambient_temp_c: n(T.sensor_dht22_suhu), humidity_pct: n(T.sensor_dht22_kelembapan) },
-    gas: { raw_value: n(T.sensor_mq135_gas) },
-    distance: { distance_cm: n(T.sensor_tfluna_jarak_cm) },
-    device_status: { alarm_state: String(T.termal_status || '').toUpperCase() === 'OVERHEAT' },
-    pan_tilt: { pan_deg: n(T.gimbal_aktual_pan_x), tilt_deg: n(T.gimbal_aktual_tilt_y) },
+    thermal: { max_temp_c: maxTemp },
+    environment: { ambient_temp_c: n(dht.suhu_panel), humidity_pct: n(dht.kelembapan_panel) },
+    gas: { raw_value: n(ruang.mq135_gas_asap) },
+    distance: { distance_cm: distance },
+    device_status: { alarm_state: /OVERHEAT|PANAS|BAHAYA|KRITIS|ALARM|DANGER/.test(termalStatus) },
+    pan_tilt: { pan_deg: n(servo.sudut_pan_aktual), tilt_deg: n(servo.sudut_tilt_aktual) },
   };
-  const lat = n(T.gps_latitude);
-  const lng = n(T.gps_longitude);
-  if (lat != null && lng != null && !(lat === 0 && lng === 0)) telemetry.gps = { lat, lng };
-  const tick = n(T.z_sistem_uptime_tick);
-  return { payload: { device_id: DEVICE_CODE, timestamp: Date.now(), telemetry, simulated: false }, tick };
+
+  // GPS hanya dipakai bila benar-benar fix (hindari koordinat dummy saat "MENCARI_SINYAL").
+  const lat = n(gps.latitude);
+  const lng = n(gps.longitude);
+  const sats = n(gps.jumlah_satelit) || 0;
+  const gpsStatus = String(gps.status_gps || '').toUpperCase();
+  const gpsFixed =
+    lat != null && lng != null && !(lat === 0 && lng === 0) && sats > 0 && !/MENCARI|NO_?FIX|SEARCH|TIDAK/.test(gpsStatus);
+  if (gpsFixed) telemetry.gps = { lat, lng };
+
+  // Data tambahan untuk dashboard (disimpan utuh di kolom raw device_telemetry; diabaikan normalize).
+  const meta = {
+    rssi_dbm: n(info.wifi_rssi_dbm),
+    uptime_s: n(info.uptime_detik),
+    device_time: info.waktu_sinkronisasi || null,
+    cam_ip: info.ip_esp32s3_cam || null,
+    stream_url: kv.kamera && kv.kamera.url_stream_mjpeg_lokal ? kv.kamera.url_stream_mjpeg_lokal : info.url_stream_mjpeg_lokal || null,
+    thermal_status: th.status_termal || null,
+    thermal_center_c: n(th.suhu_center),
+    thermal_min_c: n(th.suhu_min),
+    gas_ppm: n(mq.ppm_estimasi),
+    gas_status: mq.status_udara || null,
+    sound_db_panel: n(mic.desibel_estimasi),
+    sound_status_panel: mic.status_suara_panel || null,
+    sound_db_room: n(suara.desibel_estimasi),
+    sound_status_room: suara.status_kebisingan || null,
+    lidar_status: lidar.status_objek || null,
+    gps_status: gps.status_gps || null,
+    gps_satellites: sats,
+    ai_room_score: n(aiRoom.skor_keamanan_persen),
+    ai_room_status: aiRoom.status_keseluruhan || null,
+    ai_room_message: aiRoom.pesan_analisis_ai || null,
+    gimbal_mode: servo.mode || null,
+  };
+
+  const tick = n(info.uptime_detik); // uptime monoton -> penanda data berubah (reset saat reboot)
+  return { payload: { device_id: DEVICE_CODE, timestamp: Date.now(), telemetry, meta, simulated: false }, tick };
 }
 
-// Jalankan AI pada foto insiden ImgBB (HD) lalu simpan deteksi + alert.
+// Jalankan AI pada foto terbaru (url_foto_terbaru) lalu simpan deteksi + alert.
 async function handlePhoto(sistem, device) {
-  const K = (sistem && sistem.Kejadian) || {};
-  const url = K.foto_terakhir_url;
+  const kamera = obj(obj(sistem.kontrol_dan_visual).kamera);
+  const url = kamera.url_foto_terbaru;
   if (!url || typeof url !== 'string' || !/^https?:\/\//.test(url)) return;
   if (url === state.last_photo_url) return; // foto belum berubah
   state.last_photo_url = url;
@@ -130,7 +196,7 @@ async function handlePhoto(sistem, device) {
   try {
     buf = await fetchImage(url);
   } catch (e) {
-    return recordError('unduh foto ImgBB', e);
+    return recordError('unduh foto', e);
   }
 
   const result = await aiClient.detect(buf, url.split('/').pop() || 'inspeksi.jpg');
@@ -143,7 +209,7 @@ async function handlePhoto(sistem, device) {
     device_id: device.id,
     device_code: device.device_code,
     frame_type: 'rgb',
-    image_path: url, // URL publik ImgBB (bukan Firebase Storage)
+    image_path: url, // URL publik (ImgBB), bukan Firebase Storage
     capture_mode: 'event',
     upload_status: 'uploaded',
     inference_status: result.ok ? 'done' : 'failed',
@@ -152,7 +218,7 @@ async function handlePhoto(sistem, device) {
     model_version: result.model_version || null,
     inference_ms: typeof result.inference_ms === 'number' ? result.inference_ms : null,
     source: 'firebase',
-    raw: K,
+    raw: kamera, // menyimpan alasan_foto_terakhir, waktu_foto_terakhir, dll.
   });
   if (fErr) return recordError('simpan frame', fErr);
   state.counters.frames += 1;
@@ -193,6 +259,7 @@ async function handlePhoto(sistem, device) {
 
 async function poll() {
   try {
+    // Seluruh node Sistem_IoT kecil (tidak ada base64), aman diambil sekali jalan.
     const sistem = await fetchNode(ROOT);
     state.last_poll_at = new Date().toISOString();
     if (!sistem || typeof sistem !== 'object') return;
@@ -200,7 +267,7 @@ async function poll() {
     const device = await ensureDevice();
     if (!device) return; // gagal buat/temukan device -> coba lagi poll berikutnya
 
-    // --- Telemetri (simpan hanya saat ada data baru, pakai uptime tick sebagai penanda) ---
+    // --- Telemetri (simpan hanya saat ada data baru, pakai uptime sebagai penanda) ---
     const { payload, tick } = toPayload(sistem);
     const dup = tick != null && tick === state.last_tick;
     if (!dup) {
@@ -211,7 +278,7 @@ async function poll() {
       else if (res && res.stored) state.counters.telemetry += 1;
     }
 
-    // --- Foto insiden -> AI ---
+    // --- Foto terbaru -> AI ---
     await handlePhoto(sistem, device);
   } catch (e) {
     recordError('poll', e);
@@ -229,7 +296,7 @@ function start() {
   state.started_at = new Date().toISOString();
   poll();
   timer = setInterval(() => poll(), POLL_MS);
-  console.log(`[hw-adapter] aktif — polling ${ROOT} tiap ${POLL_MS}ms (device ${DEVICE_CODE})`);
+  console.log(`[hw-adapter] aktif - polling ${ROOT} tiap ${POLL_MS}ms (device ${DEVICE_CODE})`);
   return state;
 }
 
