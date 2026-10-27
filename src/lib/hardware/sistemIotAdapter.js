@@ -135,17 +135,28 @@ function toPayload(sistem) {
 
   // Suhu termal tertinggi dari 3 titik panas (fallback ke suhu_center).
   const maxTemp = maxOf([th.suhu_max_1, th.suhu_max_2, th.suhu_max_3]) ?? n(th.suhu_center);
+  const minTemp = n(th.suhu_min);
+  const deltaTemp = maxTemp != null && minTemp != null ? Math.round((maxTemp - minTemp) * 10) / 10 : null;
   const termalStatus = String(th.status_termal || '').toUpperCase();
 
   // Jarak lidar: pakai field datar, fallback ke detail.
   const distance = n(ruang.lidar_tfluna_jarak_cm) ?? n(lidar.jarak_cm);
 
+  // Suara: estimasi dB dari mic panel (fallback mic ruangan). audio_anomaly dari status firmware.
+  const soundDb = n(mic.desibel_estimasi) != null ? n(mic.desibel_estimasi) : n(suara.desibel_estimasi);
+  const soundStatus = String(mic.status_suara_panel || '').toUpperCase();
+  const soundAnomaly = soundStatus ? !/NORMAL|AMAN|TENANG|SENYAP/.test(soundStatus) : null;
+
   const telemetry = {
-    thermal: { max_temp_c: maxTemp },
+    thermal: { max_temp_c: maxTemp, avg_temp_c: n(th.suhu_center), delta_temp_c: deltaTemp },
     environment: { ambient_temp_c: n(dht.suhu_panel), humidity_pct: n(dht.kelembapan_panel) },
+    sound: { sound_level_db: soundDb, audio_anomaly: soundAnomaly },
     gas: { raw_value: n(ruang.mq135_gas_asap) },
     distance: { distance_cm: distance },
-    device_status: { alarm_state: /OVERHEAT|PANAS|BAHAYA|KRITIS|ALARM|DANGER/.test(termalStatus) },
+    device_status: {
+      alarm_state: /OVERHEAT|PANAS|BAHAYA|KRITIS|ALARM|DANGER/.test(termalStatus),
+      rssi_dbm: n(info.wifi_rssi_dbm),
+    },
     pan_tilt: { pan_deg: n(servo.sudut_pan_aktual), tilt_deg: n(servo.sudut_tilt_aktual) },
   };
 
