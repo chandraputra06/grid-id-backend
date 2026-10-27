@@ -203,6 +203,7 @@ async function handlePhoto(sistem, device) {
   const at = new Date().toISOString();
   const frameId = `${device.device_code}-${Date.now()}`;
   const dets = result.ok && Array.isArray(result.detections) ? result.detections : [];
+  const infMs = typeof result.inference_ms === 'number' ? Math.round(result.inference_ms) : null; // kolom integer
 
   const { error: fErr } = await supabase.from('device_frames').insert({
     frame_id: frameId,
@@ -217,7 +218,7 @@ async function handlePhoto(sistem, device) {
     inference_at: at,
     inference_error: result.ok ? null : result.error || result.status || 'ai_error',
     model_version: result.model_version || null,
-    inference_ms: typeof result.inference_ms === 'number' ? result.inference_ms : null,
+    inference_ms: infMs,
     source: 'firebase',
     raw: kamera, // menyimpan alasan_foto_terakhir, waktu_foto_terakhir, dll.
   });
@@ -235,7 +236,7 @@ async function handlePhoto(sistem, device) {
       severity: typeof d.severity === 'number' ? d.severity : null,
       bbox: d.bbox || null,
       model_version: d.model_version || result.model_version || null,
-      inference_ms: typeof result.inference_ms === 'number' ? result.inference_ms : null,
+      inference_ms: infMs,
     }))
   );
   if (dErr) return recordError('simpan deteksi', dErr);
