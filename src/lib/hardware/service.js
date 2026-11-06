@@ -16,7 +16,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const DAY = 864e5;
 
 const TELEMETRY_COLS =
-  'id, device_id, device_code, captured_at, received_at, timestamp_valid, source, max_temp_c, avg_temp_c, delta_temp_c, hotspot_x, hotspot_y, ambient_temp_c, humidity_pct, sound_level_db, dominant_freq_hz, audio_anomaly, gas_raw, distance_cm, rssi_dbm, alarm_state, pan_deg, tilt_deg, gps_lat, gps_lng, valid, validation_errors';
+  'id, device_id, device_code, captured_at, received_at, timestamp_valid, source, max_temp_c, avg_temp_c, delta_temp_c, hotspot_x, hotspot_y, ambient_temp_c, humidity_pct, sound_level_db, dominant_freq_hz, audio_anomaly, gas_raw, distance_cm, rssi_dbm, alarm_state, pan_deg, tilt_deg, gps_lat, gps_lng, compensated_max_temp, gas_ppm, hazard_level, valid, validation_errors';
 const FRAME_COLS =
   'id, frame_id, device_id, device_code, captured_at, received_at, frame_type, image_path, capture_mode, upload_status, inference_status, inference_at, inference_error, model_version, inference_ms, width, height, source';
 const ASSET_COLS = 'id, asset_code, name, asset_type, lat, lng, unit, adm4, criticality';
@@ -317,7 +317,7 @@ async function getDevice(scope, id) {
 
   const [latest, rgb, thermal, openAlerts, risk] = await Promise.all([
     device.latest_telemetry_id
-      ? supabase.from('device_telemetry').select(TELEMETRY_COLS).eq('id', device.latest_telemetry_id).maybeSingle().then((r) => r.data)
+      ? supabase.from('device_telemetry').select(`${TELEMETRY_COLS}, raw`).eq('id', device.latest_telemetry_id).maybeSingle().then((r) => r.data)
       : null,
     supabase.from('device_frames').select(FRAME_COLS).eq('device_id', id).eq('frame_type', 'rgb')
       .order('captured_at', { ascending: false }).limit(1).then((r) => (r.data || [])[0] || null),

@@ -18,6 +18,8 @@ const RANGES = {
   sound_level_db: [0, 194],
   dominant_freq_hz: [0, 48000],
   gas_raw: [0, 65535], // nilai ADC mentah (belum terkalibrasi ppm)
+  compensated_max_temp: [-40, 1000], // Est. Inti terkompensasi jarak LiDAR
+  gas_ppm: [0, 100000], // MQ-135 ppm
   distance_cm: [0, 10000],
   rssi_dbm: [-130, 0],
   pan_deg: [-360, 360],
@@ -129,6 +131,7 @@ function normalizeTelemetry(payload, opt = {}) {
     max_temp_c: num(pick(t, ['thermal', 'max_temp_c']), 'max_temp_c', errors),
     avg_temp_c: num(pick(t, ['thermal', 'avg_temp_c']), 'avg_temp_c', errors),
     delta_temp_c: num(pick(t, ['thermal', 'delta_temp_c']), 'delta_temp_c', errors),
+    compensated_max_temp: num(pick(t, ['thermal', 'compensated_max_temp']), 'compensated_max_temp', errors),
     hotspot_x: int(pick(t, ['thermal', 'hotspot', 'x']), 'hotspot_x', 0, THERMAL_W - 1, errors),
     hotspot_y: int(pick(t, ['thermal', 'hotspot', 'y']), 'hotspot_y', 0, THERMAL_H - 1, errors),
 
@@ -140,11 +143,13 @@ function normalizeTelemetry(payload, opt = {}) {
     audio_anomaly: bool(pick(t, ['sound', 'audio_anomaly']), 'audio_anomaly', errors),
 
     gas_raw: num(pick(t, ['gas', 'raw_value']), 'gas_raw', errors),
+    gas_ppm: num(pick(t, ['gas', 'ppm']), 'gas_ppm', errors),
     distance_cm: num(pick(t, ['distance', 'distance_cm']), 'distance_cm', errors),
 
     rssi_dbm: num(pick(t, ['device_status', 'rssi_dbm']), 'rssi_dbm', errors),
     alarm_state: bool(pick(t, ['device_status', 'alarm_state']), 'alarm_state', errors),
-
+    hazard_level: int(pick(t, ['device_status', 'hazard_level']), 'hazard_level', 0, 4, errors),
+    
     pan_deg: num(pick(t, ['pan_tilt', 'pan_deg']), 'pan_deg', errors),
     tilt_deg: num(pick(t, ['pan_tilt', 'tilt_deg']), 'tilt_deg', errors),
 
