@@ -51,6 +51,9 @@ const NODE3 = (process.env.GRID_HW_NODE3_PATH || 'nodes/node3_panel').replace(/^
 const DEVICE_CODE = process.env.GRID_HW_DEVICE_CODE || 'PANEL-01';
 const DEVICE_NAME = process.env.GRID_HW_DEVICE_NAME || 'Panel Inspeksi 01';
 const POLL_MS = Math.max(3000, Number(process.env.GRID_HW_POLL_MS || 10000));
+// Heartbeat: simpan telemetri minimal tiap interval ini meski nilai tak berubah,
+// supaya "Telemetri terakhir" tetap segar & badge tidak salah jadi "Offline".
+const HEARTBEAT_MS = Math.max(POLL_MS, Number(process.env.GRID_HW_HEARTBEAT_MS || 30000));
 const STORAGE_BUCKET = process.env.GRID_HW_STORAGE_BUCKET || 'report-photos';
 
 // Label level menaik sesuai firmware v3.
@@ -63,6 +66,7 @@ const state = {
   last_poll_at: null,
   last_error: null,
   last_sig: null,
+  last_store_at: 0,
   last_photo_url: null,
   counters: { telemetry: 0, duplicates: 0, frames: 0, detections: 0, errors: 0 },
 };
@@ -418,11 +422,26 @@ async function poll() {
     const device = await ensureDevice();
     if (!device) return;
 
-    // --- Telemetri (simpan hanya saat nilai berubah) ---
+    // Heartbeat koneksi: alat jelas hidup (ada data), jadi tandai online tiap poll.
+    // Mencegah badge salah "Offline" saat nilai sensor kebetulan stabil.
+    await supabase
+      .from('devices')
+      .update({ status: 'online', last_seen: new Date().toISOString() })
+      .eq('id', device.id);
+
+    // --- Telemetri: simpan saat nilai berubah ATAU sudah lewat HEARTBEAT_MS sejak simpan terakhir ---
     const { payload, sig } = toPayload({ n1live, n1servo, n1cam, n1status, n1ai, n1net, n2live, n3live, n3ai });
-    if (sig !== state.last_sig) {
+    const now = Date.now();
+    const changed = sig !== state.last_sig;
+    const stale = now - state.last_store_at >= HEARTBEAT_MS;
+    if (changed || stale) {
       state.last_sig = sig;
-      const key = `${device.device_code}/${crypto.createHash('sha1').update(sig).digest('hex').slice(0, 16)}`;
+      state.last_store_at = now;
+      // Kunci ingest menyertakan bucket waktu heartbeat supaya baris baru tetap tersimpan
+      // walau signature sama (bukan dianggap duplikat).
+      const bucket = Math.floor(now / HEARTBEAT_MS);
+      const hash = crypto.createHash('sha1').update(sig).digest('hex').slice(0, 12);
+      const key = `${device.device_code}/${hash}-${changed ? 'c' + now : 'h' + bucket}`;
       const res = await ingest.ingestTelemetry(device, payload, { firebaseKey: key, source: 'firebase' });
       if (res && res.duplicate) state.counters.duplicates += 1;
       else if (res && res.stored) state.counters.telemetry += 1;
