@@ -12,6 +12,7 @@ const ingest = require('../lib/hardware/ingest');
 const bridge = require('../lib/hardware/bridge');
 const adapter = require('../lib/hardware/sistemIotAdapter');
 const rules = require('../lib/hardware/rules');
+const deviceControl = require('../lib/hardware/deviceControl');
 
 const SNAPSHOT_INTERVALS = [5, 10, 30, 60];
 const STREAM_TYPES = ['mjpeg', 'hls', 'iframe'];
@@ -167,5 +168,36 @@ const saveInterval = [
 ];
 router.put('/devices/:id/snapshot-interval', ...saveInterval);
 router.patch('/devices/:id/snapshot-interval', ...saveInterval);
+
+// POST /api/hardware/devices/:id/control — kontrol kamera (servo PTZ) & jepret manual.
+// Web -> Firebase RTDB /grid_id/control -> firmware Node 1 (poll + cmd_seq).
+// Admin / supervisor / tim hardware. Perintah "fire-and-forget": berlaku setelah
+// firmware membaca node control (±beberapa detik, sesuai siklus poll alat).
+// body: { mode?: 'AUTO'|'MANUAL', pan?, tilt?, preset?, snapshot?: bool, snapshot_type? }
+router.post(
+  '/devices/:id/control',
+  requireRole('admin', 'supervisor', 'hardware'),
+  asyncHandler(async (req, res) => {
+    // Pastikan perangkat ada & dalam scope akun ini.
+    await svc.deviceInScope(req.scope, req.params.id);
+
+    const b = req.body || {};
+    try {
+      const sent = await deviceControl.sendServoCommand({
+        mode: b.mode,
+        pan: b.pan,
+        tilt: b.tilt,
+        preset: b.preset,
+        snapshot: b.snapshot === true,
+        snapshotType: b.snapshot_type,
+      });
+      res.json({ ok: true, data: { sent, note: 'Perintah terkirim. Berlaku setelah alat membaca node kontrol (±beberapa detik).' } });
+    } catch (e) {
+      if (e.code === 'bad_request') throw new ApiError(400, 'bad_request', e.message);
+      if (e.code === 'rtdb_unconfigured') throw new ApiError(503, 'rtdb_unconfigured', e.message);
+      throw new ApiError(502, 'rtdb_error', e.message || 'Gagal mengirim perintah ke alat');
+    }
+  })
+);
 
 module.exports = router;

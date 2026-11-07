@@ -1,24 +1,36 @@
 // src/lib/hardware/sistemIotAdapter.js
-// Adapter Firebase RTDB tim hardware - skema "grid_id" (firmware Node 1 ESP32-S3 + Node 3 ESP32).
+// Adapter Firebase RTDB tim hardware — skema "grid_id" v3 (firmware Node 1/2/3 v3.0.0).
 //
-// Struktur RTDB (root = grid_id), ditulis firmware:
-//   grid_id/node1_s3cam     -> lidar_cm/amp/kd, sound3pin_db/raw/peak, sound_status, gps,
-//                              servo_state{current_pan,current_tilt,active_mode,...},
-//                              hazard_status{hazard_level,hazard_label,is_danger,raw_temp_c,compensated_temp_c},
-//                              camera{latest_imgbb_url, last_capture_time, boot_capture, manual_capture, auto_capture}
-//   grid_id/node2_thermal   -> max_temp_raw, min_temp_raw, center_temp_raw (ditulis Node 2 Thermal)
-//   grid_id/node3_esp8266   -> dht_temp, dht_hum, mq135_ppm, mq135_raw, mic6pin_db, mic6pin_peak
-//   grid_id/control         -> mode, preset, ... (perintah; TIDAK dipetakan ke telemetri)
-//   grid_id/network         -> info IP + latest_imgbb_url (duplikat; tidak dipakai di sini)
+// STRUKTUR BARU (root = grid_id), ditulis firmware v3 — rapi per-node di bawah /nodes:
+//   grid_id/nodes/node1_s3cam/live    -> lidar{distance_cm,strength,...}, sound{raw,db_estimate,status},
+//                                        gps{fix,lat,lng,satellites,...}, thermal_link{source,temp_c,...}
+//   grid_id/nodes/node1_s3cam/servo   -> mode, preset, pan, tilt, step{num,total,phase}, tracking{...}
+//   grid_id/nodes/node1_s3cam/camera  -> ok, capture_status, total_captures,
+//                                        latest/boot/manual/auto {imgbb_url, type, reason, pan, tilt, temp_c, level}
+//   grid_id/nodes/node1_s3cam/status  -> level(0..3), thermal_temp_c, evaluated_temp_c, is_danger, summary
+//   grid_id/nodes/node1_s3cam/ai      -> system_level, risk, risk_score, diagnosis, recommendation
+//   grid_id/nodes/node1_s3cam/network -> ip, rssi_dbm, stream_url, control_url
+//   grid_id/nodes/node2_thermal/live  -> max_temp_c, min_temp_c, center_temp_c, mean_temp_c, delta_t_c,
+//                                        level, anomaly, hotspot{x,y,area_pct}, fps
+//   grid_id/nodes/node3_panel/live    -> temperature{value_c,humidity_pct,rise_c_per_min,trend,level},
+//                                        gas{raw,baseline,ratio,z_score,saturated,level},
+//                                        sound{db,baseline_db,delta_db,crest_factor,arc_events_5s,hum100_ratio,level}
+//   grid_id/nodes/node3_panel/ai      -> anomaly_score, health_score, risk, diagnosis
+//   grid_id/nodes/node1_s3cam/commands-> perintah servo (lihat deviceControl.js; TIDAK dipetakan ke telemetri)
 //
-// PENTING: foto ADA di node1_s3cam/camera/latest_imgbb_url (bukan latest_snapshot - node itu tidak ada).
-// Adapter polling REST per-node, memetakan ke format internal (normalize.js) lalu ingest.js.
+// Level bahaya firmware v3 (menaik): 0 NORMAL, 1 WASPADA, 2 SIAGA, 3 BAHAYA. is_danger = level >= 2.
+// Catatan: MQ-135 v3 melaporkan RATIO (bukan ppm). gas_ppm kolom -> null; rasio ada di meta.gas_ratio.
+//
+// Adapter polling REST per-subnode, memetakan ke format internal (normalize.js) lalu ingest.js.
 // Foto terbaru -> re-host ke Supabase -> YOLO -> device_frames/detections + alert.
 //
 // ENV:
 //   GRID_HW_RTDB_URL      (wajib)
 //   GRID_HW_RTDB_AUTH     (opsional)
 //   GRID_HW_RTDB_ROOT     (default "grid_id")
+//   GRID_HW_NODE1_PATH    (default "nodes/node1_s3cam")
+//   GRID_HW_NODE2_PATH    (default "nodes/node2_thermal")
+//   GRID_HW_NODE3_PATH    (default "nodes/node3_panel")
 //   GRID_HW_DEVICE_CODE   (default "PANEL-01")
 //   GRID_HW_DEVICE_NAME   (default "Panel Inspeksi 01")
 //   GRID_HW_POLL_MS       (default 10000)
@@ -33,12 +45,16 @@ const rules = require('./rules');
 const RTDB_URL = (process.env.GRID_HW_RTDB_URL || '').replace(/\/+$/, '');
 const AUTH = process.env.GRID_HW_RTDB_AUTH || '';
 const ROOT = process.env.GRID_HW_RTDB_ROOT || 'grid_id';
+const NODE1 = (process.env.GRID_HW_NODE1_PATH || 'nodes/node1_s3cam').replace(/^\/+|\/+$/g, '');
+const NODE2 = (process.env.GRID_HW_NODE2_PATH || 'nodes/node2_thermal').replace(/^\/+|\/+$/g, '');
+const NODE3 = (process.env.GRID_HW_NODE3_PATH || 'nodes/node3_panel').replace(/^\/+|\/+$/g, '');
 const DEVICE_CODE = process.env.GRID_HW_DEVICE_CODE || 'PANEL-01';
 const DEVICE_NAME = process.env.GRID_HW_DEVICE_NAME || 'Panel Inspeksi 01';
 const POLL_MS = Math.max(3000, Number(process.env.GRID_HW_POLL_MS || 10000));
 const STORAGE_BUCKET = process.env.GRID_HW_STORAGE_BUCKET || 'report-photos';
 
-const HAZARD_LABEL = { 0: 'Normal', 1: 'Kritis', 2: 'Bahaya Sedang', 3: 'Peringatan Dini' };
+// Label level menaik sesuai firmware v3.
+const HAZARD_LABEL = { 0: 'Normal', 1: 'Waspada', 2: 'Siaga', 3: 'Bahaya' };
 
 const state = {
   enabled: false,
@@ -108,6 +124,7 @@ const n = (v) => {
   return null;
 };
 const obj = (v) => (v && typeof v === 'object' ? v : {});
+const bool = (v) => v === true || v === 'true' || v === 1;
 const firstNum = (...vals) => {
   for (const v of vals) {
     const x = n(v);
@@ -116,76 +133,150 @@ const firstNum = (...vals) => {
   return null;
 };
 
-// Petakan node grid_id -> payload format internal (lihat normalize.js).
-function toPayload(nodes) {
-  const th = obj(nodes.thermal); // node2_thermal
-  const e = obj(nodes.esp); // node3_esp8266
-  const s3 = obj(nodes.s3); // node1_s3cam
-  const servo = obj(s3.servo_state);
-  const gps = obj(s3.gps);
-  const hz = obj(s3.hazard_status); // hazard + compensated ditulis firmware di sini
+// Petakan node grid_id v3 -> payload format internal (lihat normalize.js).
+// d = { n1live, n1servo, n1cam, n1status, n1ai, n1net, n2live, n3live, n3ai }
+function toPayload(d) {
+  const n2 = obj(d.n2live); // nodes/node2_thermal/live
+  const n2hot = obj(n2.hotspot);
+  const n3 = obj(d.n3live); // nodes/node3_panel/live
+  const n3t = obj(n3.temperature);
+  const n3g = obj(n3.gas);
+  const n3s = obj(n3.sound);
+  const n3ai = obj(d.n3ai); // nodes/node3_panel/ai
 
-  // Suhu: raw dari node2_thermal (fallback raw_temp_c node1); compensated & hazard dari node1 (fallback node2).
-  const maxTemp = firstNum(th.max_temp_raw, hz.raw_temp_c);
-  const minTemp = n(th.min_temp_raw);
-  const deltaTemp = maxTemp != null && minTemp != null ? Math.round((maxTemp - minTemp) * 10) / 10 : null;
-  const compensated = firstNum(hz.compensated_temp_c, th.compensated_max_temp);
-  const hazard = firstNum(hz.hazard_level, th.hazard_level);
+  const live1 = obj(d.n1live); // nodes/node1_s3cam/live
+  const lidar = obj(live1.lidar);
+  const snd1 = obj(live1.sound);
+  const gps = obj(live1.gps);
+  const servo = obj(d.n1servo); // nodes/node1_s3cam/servo
+  const st1 = obj(d.n1status); // nodes/node1_s3cam/status (hazard terfusi)
+  const ai1 = obj(d.n1ai); // nodes/node1_s3cam/ai
+  const net1 = obj(d.n1net); // nodes/node1_s3cam/network
+
+  // Suhu: raw & delta dari Node 2 (kamera termal); compensated & hazard dari Node 1 (fusi).
+  const maxTemp = firstNum(n2.max_temp_c, st1.thermal_temp_c);
+  const minTemp = n(n2.min_temp_c);
+  const avgTemp = firstNum(n2.center_temp_c, n2.mean_temp_c);
+  const deltaTemp = firstNum(
+    n2.delta_t_c,
+    maxTemp != null && minTemp != null ? Math.round((maxTemp - minTemp) * 10) / 10 : null
+  );
+  const compensated = firstNum(st1.evaluated_temp_c, obj(live1.thermal_link).temp_c);
+  const hazard = firstNum(st1.level, ai1.system_level);
+  const isDanger = hazard != null ? hazard >= 2 : false; // firmware: is_danger = level >= 2
 
   const telemetry = {
     thermal: {
       max_temp_c: maxTemp,
-      avg_temp_c: n(th.center_temp_raw),
+      avg_temp_c: avgTemp,
       delta_temp_c: deltaTemp,
       compensated_max_temp: compensated,
     },
-    environment: { ambient_temp_c: n(e.dht_temp), humidity_pct: n(e.dht_hum) },
-    sound: { sound_level_db: n(e.mic6pin_db), audio_anomaly: null },
-    gas: { raw_value: n(e.mq135_raw), ppm: n(e.mq135_ppm) },
-    distance: { distance_cm: n(s3.lidar_cm) },
-    device_status: {
-      alarm_state: hazard === 1, // level 1 = bahaya kritis
-      hazard_level: hazard,
+    environment: { ambient_temp_c: n(n3t.value_c), humidity_pct: n(n3t.humidity_pct) },
+    sound: {
+      sound_level_db: firstNum(n3s.db, snd1.db_estimate),
+      audio_anomaly: (n(n3s.arc_events_5s) || 0) > 0 || (n(n3s.level) || 0) >= 1 ? true : null,
     },
-    pan_tilt: {
-      pan_deg: firstNum(servo.current_pan, servo.servo_bawah_pan),
-      tilt_deg: firstNum(servo.current_tilt, servo.servo_atas_tilt),
-    },
+    gas: { raw_value: n(n3g.raw), ppm: null }, // v3: MQ-135 lapor ratio, bukan ppm (lihat meta.gas_ratio)
+    distance: { distance_cm: n(lidar.distance_cm) },
+    device_status: { alarm_state: isDanger, hazard_level: hazard },
+    pan_tilt: { pan_deg: n(servo.pan), tilt_deg: n(servo.tilt) },
   };
 
   // GPS: pakai bila ada fix (satelit > 0 & koordinat valid).
   const lat = n(gps.lat);
   const lng = n(gps.lng);
   const sats = n(gps.satellites) || 0;
-  if (lat != null && lng != null && !(lat === 0 && lng === 0) && sats > 0) telemetry.gps = { lat, lng };
+  const gpsFix = bool(gps.fix);
+  if (gpsFix && lat != null && lng != null && !(lat === 0 && lng === 0)) telemetry.gps = { lat, lng };
 
   // Data tambahan untuk dashboard (disimpan utuh di kolom raw device_telemetry; diabaikan normalize).
   const meta = {
-    lidar_amp: n(s3.lidar_amp),
-    lidar_kd: n(s3.lidar_kd),
-    mic6pin_peak: n(e.mic6pin_peak),
-    sound3pin_db: n(s3.sound3pin_db),
-    sound3pin_raw: n(s3.sound3pin_raw),
-    sound3pin_peak: n(s3.sound3pin_peak),
-    sound_status: s3.sound_status || null,
-    gas_ppm: n(e.mq135_ppm),
+    // LiDAR
+    lidar_cm: n(lidar.distance_cm),
+    lidar_amp: n(lidar.strength), // kompat lama (kartu "Intensitas Laser")
+    lidar_strength: n(lidar.strength),
+    lidar_sensor_temp_c: n(lidar.sensor_temp_c),
+    lidar_comp_factor: n(lidar.distance_comp_factor),
+    // Suara — Node 3 (INMP441) & Node 1 (3-pin)
+    sound_db: n(n3s.db),
+    sound_baseline_db: n(n3s.baseline_db),
+    sound_delta_db: n(n3s.delta_db),
+    sound_crest_factor: n(n3s.crest_factor),
+    arc_events_5s: n(n3s.arc_events_5s),
+    hum100_ratio: n(n3s.hum100_ratio),
+    mic6pin_peak: n(n3s.crest_factor), // kompat lama (kartu "Puncak Akustik")
+    sound3pin_db: n(snd1.db_estimate),
+    sound3pin_raw: n(snd1.raw),
+    sound3pin_peak: n(snd1.peak_to_peak),
+    sound_status: snd1.status || null,
+    // Gas — MQ-135 v3 (ratio terhadap baseline)
+    gas_raw: n(n3g.raw),
+    gas_baseline: n(n3g.baseline),
+    gas_ratio: n(n3g.ratio),
+    gas_z_score: n(n3g.z_score),
+    gas_saturated: bool(n3g.saturated),
+    gas_level: n(n3g.level),
+    gas_ppm: null, // tidak lagi dikirim firmware v3
+    // Thermal (Node 2)
+    thermal_min_c: minTemp,
+    thermal_mean_c: n(n2.mean_temp_c),
+    delta_t_c: deltaTemp,
+    hotspot_x: n(n2hot.x),
+    hotspot_y: n(n2hot.y),
+    hotspot_area_pct: n(n2hot.area_pct),
+    thermal_anomaly: bool(n2.anomaly),
+    thermal_fps: n(n2.fps),
+    thermal_level: n(n2.level),
+    // Hazard & AI (fusi)
     compensated_max_temp: compensated,
     hazard_level: hazard,
-    hazard_label: hz.hazard_label || (hazard != null ? HAZARD_LABEL[hazard] || null : null),
-    servo_mode: servo.active_mode || null,
+    hazard_label: hazard != null ? HAZARD_LABEL[hazard] || null : null,
+    is_danger: isDanger,
+    system_level: n(ai1.system_level),
+    node1_level: firstNum(ai1.node1_level, st1.level),
+    node2_level: firstNum(ai1.node2_level, n2.level),
+    node3_level: firstNum(ai1.node3_level, n3t.level),
+    ai_risk: ai1.risk || n3ai.risk || null,
+    ai_risk_score: firstNum(ai1.risk_score, n3ai.risk_score),
+    ai_diagnosis: ai1.diagnosis || n3ai.diagnosis || st1.summary || null,
+    ai_recommendation: ai1.recommendation || null,
+    health_score: n(n3ai.health_score),
+    anomaly_score: n(n3ai.anomaly_score),
+    // Servo
+    servo_mode: servo.mode || null,
     servo_preset: n(servo.preset),
+    servo_preset_name: servo.preset_name || null,
+    servo_pan: n(servo.pan),
+    servo_tilt: n(servo.tilt),
+    servo_step_num: n(obj(servo.step).num),
+    servo_step_total: n(obj(servo.step).total),
+    servo_phase: obj(servo.step).phase || null,
+    servo_pca_ok: bool(servo.pca9685_ok),
+    tracking_enabled: bool(obj(servo.tracking).enabled),
+    tracking_active: bool(obj(servo.tracking).active),
+    tracking_centered: bool(obj(servo.tracking).centered),
+    // GPS
     gps_satellites: sats,
+    gps_fix: gpsFix,
     gps_location: gps.location_name || null,
-    cam_ip: s3.ip_local || null,
-    stream_url: s3.stream_url_port81 || null,
+    gps_maps_url: gps.maps_url || null,
+    // Jaringan & kamera
+    cam_ip: net1.ip || null,
+    stream_url: net1.stream_url || null,
+    control_url: net1.control_url || null,
+    rssi_dbm: n(net1.rssi_dbm),
+    capture_status: obj(d.n1cam).capture_status || null,
+    total_captures: n(obj(d.n1cam).total_captures),
   };
 
   // Signature untuk dedup: hanya simpan saat nilai berubah.
   const sig = [
-    maxTemp, telemetry.thermal.avg_temp_c, minTemp, compensated, hazard,
+    maxTemp, avgTemp, minTemp, compensated, hazard,
     telemetry.environment.ambient_temp_c, telemetry.environment.humidity_pct,
-    telemetry.gas.raw_value, telemetry.gas.ppm, telemetry.sound.sound_level_db,
-    telemetry.distance.distance_cm, meta.sound3pin_db, telemetry.pan_tilt.pan_deg, telemetry.pan_tilt.tilt_deg,
+    telemetry.gas.raw_value, meta.gas_ratio, telemetry.sound.sound_level_db,
+    telemetry.distance.distance_cm, meta.sound3pin_db,
+    telemetry.pan_tilt.pan_deg, telemetry.pan_tilt.tilt_deg,
   ].join('|');
 
   return { payload: { device_id: DEVICE_CODE, timestamp: Date.now(), telemetry, meta, simulated: false }, sig };
@@ -215,14 +306,14 @@ async function rehostImage(buf, srcUrl) {
   }
 }
 
-// Ambil URL foto terbaru dari node1_s3cam/camera (prioritas latest_imgbb_url, lalu auto/manual/boot).
+// Ambil URL foto terbaru dari node1_s3cam/camera v3 (latest -> auto -> manual -> boot, field .imgbb_url).
 function pickPhotoUrl(cam) {
   const c = obj(cam);
   const candidates = [
-    c.latest_imgbb_url,
-    obj(c.auto_capture).imgbb_url,
-    obj(c.manual_capture).imgbb_url,
-    obj(c.boot_capture).imgbb_url,
+    obj(c.latest).imgbb_url,
+    obj(c.auto).imgbb_url,
+    obj(c.manual).imgbb_url,
+    obj(c.boot).imgbb_url,
   ];
   for (const u of candidates) {
     if (u && typeof u === 'string' && /^https?:\/\//.test(u) && !/\/placeholder\//i.test(u)) return u;
@@ -268,22 +359,22 @@ async function handlePhoto(cam, device) {
     model_version: result.model_version || null,
     inference_ms: infMs,
     source: 'firebase',
-    raw: camera, // metadata kamera: auto_capture.trigger_reason, hazard_level, capture_time, dll.
+    raw: camera, // metadata kamera v3: latest/auto/manual/boot {reason, pan, tilt, temp_c, level, time_local}
   });
   if (fErr) return recordError('simpan frame', fErr);
   state.counters.frames += 1;
 
   if (!dets.length) return;
   const { error: dErr } = await supabase.from('device_detections').insert(
-    dets.map((d) => ({
+    dets.map((dd) => ({
       frame_id: frameId,
       device_id: device.id,
-      defect: d.defect || null,
-      category: d.category || null,
-      confidence: typeof d.confidence === 'number' ? d.confidence : null,
-      severity: typeof d.severity === 'number' ? d.severity : null,
-      bbox: d.bbox || null,
-      model_version: d.model_version || result.model_version || null,
+      defect: dd.defect || null,
+      category: dd.category || null,
+      confidence: typeof dd.confidence === 'number' ? dd.confidence : null,
+      severity: typeof dd.severity === 'number' ? dd.severity : null,
+      bbox: dd.bbox || null,
+      model_version: dd.model_version || result.model_version || null,
       inference_ms: infMs,
     }))
   );
@@ -294,12 +385,12 @@ async function handlePhoto(cam, device) {
   try {
     const cfg = await ingest.configFor(device);
     const best = new Map();
-    for (const d of dets) {
-      const k = d.defect || 'unknown';
-      if (!best.has(k) || Number(d.confidence) > Number(best.get(k).confidence)) best.set(k, d);
+    for (const dd of dets) {
+      const k = dd.defect || 'unknown';
+      if (!best.has(k) || Number(dd.confidence) > Number(best.get(k).confidence)) best.set(k, dd);
     }
-    for (const d of best.values()) {
-      const cand = rules.aiDetectionAlert(d, cfg);
+    for (const dd of best.values()) {
+      const cand = rules.aiDetectionAlert(dd, cfg);
       if (cand) await ingest.upsertAlert(device, cand, { frame_id: frameId, source: 'firebase' });
     }
   } catch (err) {
@@ -309,21 +400,26 @@ async function handlePhoto(cam, device) {
 
 async function poll() {
   try {
-    // Per-node (JANGAN tarik seluruh grid_id: ada riwayat 'snapshots' yang besar).
-    const [thermal, esp, s3, control] = await Promise.all([
-      fetchNode(`${ROOT}/node2_thermal`),
-      fetchNode(`${ROOT}/node3_esp8266`),
-      fetchNode(`${ROOT}/node1_s3cam`),
-      fetchNode(`${ROOT}/control`),
+    // Per-subnode (JANGAN tarik seluruh node: ada 'history'/'events' yang besar).
+    const [n1live, n1servo, n1cam, n1status, n1ai, n1net, n2live, n3live, n3ai] = await Promise.all([
+      fetchNode(`${ROOT}/${NODE1}/live`),
+      fetchNode(`${ROOT}/${NODE1}/servo`),
+      fetchNode(`${ROOT}/${NODE1}/camera`),
+      fetchNode(`${ROOT}/${NODE1}/status`),
+      fetchNode(`${ROOT}/${NODE1}/ai`),
+      fetchNode(`${ROOT}/${NODE1}/network`),
+      fetchNode(`${ROOT}/${NODE2}/live`),
+      fetchNode(`${ROOT}/${NODE3}/live`),
+      fetchNode(`${ROOT}/${NODE3}/ai`),
     ]);
     state.last_poll_at = new Date().toISOString();
-    if (!thermal && !esp && !s3) return; // belum ada data (alat mati)
+    if (!n1live && !n1status && !n2live && !n3live) return; // belum ada data (alat mati)
 
     const device = await ensureDevice();
     if (!device) return;
 
     // --- Telemetri (simpan hanya saat nilai berubah) ---
-    const { payload, sig } = toPayload({ thermal, esp, s3, control });
+    const { payload, sig } = toPayload({ n1live, n1servo, n1cam, n1status, n1ai, n1net, n2live, n3live, n3ai });
     if (sig !== state.last_sig) {
       state.last_sig = sig;
       const key = `${device.device_code}/${crypto.createHash('sha1').update(sig).digest('hex').slice(0, 16)}`;
@@ -333,7 +429,7 @@ async function poll() {
     }
 
     // --- Foto terbaru (node1_s3cam/camera) -> AI ---
-    await handlePhoto(obj(s3).camera, device);
+    await handlePhoto(n1cam, device);
   } catch (e) {
     recordError('poll', e);
   }
@@ -350,7 +446,7 @@ function start() {
   state.started_at = new Date().toISOString();
   poll();
   timer = setInterval(() => poll(), POLL_MS);
-  console.log(`[hw-adapter] aktif - polling ${ROOT} tiap ${POLL_MS}ms (device ${DEVICE_CODE})`);
+  console.log(`[hw-adapter] aktif - polling ${ROOT}/${NODE1}|${NODE2}|${NODE3} tiap ${POLL_MS}ms (device ${DEVICE_CODE})`);
   return state;
 }
 
